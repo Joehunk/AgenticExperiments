@@ -1,0 +1,13 @@
+[project]
+name = "llm-proto"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "langchain-anthropic>=0.3.19",
+    "langgraph>=0.6.6",
+    "load-dotenv>=0.1.0",
+    "openai-agents[litellm]>=0.2.10",
+    "pydantic>=2.11.7",
+]
