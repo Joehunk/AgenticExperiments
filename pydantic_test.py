@@ -32,17 +32,23 @@ class TestModel(BaseModel):
 class FormResult(BaseModel):
     status: t.Literal["SUCCESS", "USER_INPUT_NEEDED"] = Field(
         description="""
-        This field indicates whether the agent was able to successfully fill out the form data
+        This field indicates whether the agent was able to successfully fill out the form data.
+
+        SUCESS indicates that the agent was able to fill out the form data, and result will contain
+        the filled out data.
+
+        USER_INPUT_NEEDED indicates that the agent was not able to fill out the form data, and result
+        will contain a string that will be sent to the user to get additional information. The agent
+        will then be invoked again with the user's response, and should continue to do so until it is able
+        to fill out the form data.
         """
     )
     result: t.Union[TestModel, str] = Field(
         description="""
-        This field represents the result of an attempt by the agent to fill out the form in a way that conforms
-        to a specific Python type. If the agent is able to generate a valid data, including successfully running
-        the supplied validation tool, then this field should contain a Python object the the form data.
-        If the agent needs user feedback to be able to fill out the form or correct a validation error,
-        then this field should contain a string that will be sent directly to the user that explains
-        the issue and asks for their input.
+        If status is SUCCESS, this field contains the filled out form data.
+
+        If status is USER_INPUT_NEEDED, this field contains a string that will be sent to the user
+        to get additional information.
         """)
     
 @function_tool(strict_mode=False)
@@ -92,52 +98,39 @@ def validate_model_langgraph(
         return e
 
 
-TOOL_BASED_PROMPT_AGENT_AGNOSTIC = """
-You are an agent whose goal is to take unstructured u`ser input and format it to a supplied response format.
-The output must comply with your output schema requirements. You have access to a tool that can validate your output
-against the schema. You should use this tool whenever you are unsure if your output is valid.
+TOOL_BASED_PROMPT_AGENT_AGNOSTIC = f"""
+You are an agent whose goal is to take unstructured user input and format it into a structured form.
 
-CRITICAL CONSTRAINTS:
-1. You MUST output ONLY the fields specified in the provided schema - no more, no less
-2. You MUST NOT add, invent, or suggest fields that are not in the schema
-3. You MUST ALWAYS call the validation tool before returning a SUCCESS status
-4. The schema is the single source of truth - follow it exactly
+CRITICAL: Always review the entire conversation history before responding. Information provided in ANY previous turn must be used and should never be requested again. Before asking for any information, first check if it has already been provided in earlier messages.
 
-The schema allows two statuses:
-- SUCCESS: You have successfully structured ALL required fields from the schema (and ONLY those fields). 
-  The result should contain exactly the structured data matching the schema.
-- USER_INPUT_NEEDED: You need more information to populate required fields from the schema.
-  The result should be a clear message to the user specifying which schema fields need data.
+You are configured for structured output, and you have access to a tool that can validate your output.
+You MUST supply output corresponding to the output schema, and you MUST use the tool to validate your output.
 
-SCHEMA ADHERENCE:
-- Output EXACTLY the fields defined in the output schema - nothing else
-- Do NOT add fields even if they seem logical or the user provides additional information
-- Do NOT suggest or ask for fields outside the schema
-- Ignore any extra information that doesn't map to schema fields
-- Required fields: Must be filled or request them from user
-- Optional fields: Include only if specified in schema AND data is available
-- If unsure whether a field exists in the schema, check the schema - do not assume
+CONVERSATION MEMORY RULES:
+- Maintain a running mental inventory of ALL information provided across all conversation turns
+- Before asking any question, mentally review: "What has the user already told me?"
+- Build upon previous responses incrementally - each turn should add to, not restart, the data collection
+- If information seems missing, double-check the conversation history before requesting it
 
-FORMATTING PRINCIPLES:
-You should automatically handle minor formatting corrections without user input:
-- Capitalization adjustments appropriate to the data type
-- Format standardization to match schema requirements
-- Whitespace trimming and normalization
-- Common abbreviation expansions or standardizations
-- Obvious typos with a single likely correction
-- Number and date formatting as specified by the schema
+BEFORE EACH RESPONSE:
+1. Review ALL previous conversation turns
+2. Identify what information has already been provided
+3. Review what you have learned from previous validation attempts
+4. Determine what information is still needed
+5. Only ask for information that has NOT been provided yet
 
-USE USER_INPUT_NEEDED STATUS ONLY WHEN:
-- Required schema fields are missing or ambiguous
-- Data conflicts or is logically inconsistent for schema fields
-- Multiple valid interpretations exist for a schema field and you cannot determine the correct one
-- The provided information cannot be reasonably mapped to required schema fields
+If you need any information from the user to fill out the form, you MUST ask the user for that information - but ONLY if it hasn't been provided already.
+Feel free to correct obvious errors such as typographical errors, capitalization errors, or formatting errors.
+If it is not apparent how to correct an error, you MUST ask the user for clarification.
 
-REMEMBER: 
-- Your role is to structure data TO THE EXACT SCHEMA provided, not to improve upon it
-- Extra information from the user should be silently ignored, not included
-- Never ask for or include fields not in the schema
-- The validation tool checks against the schema - trust it as your guide
+Remember: This is a multi-turn conversation. Never ask for information that has already been provided. 
+Always build upon the accumulated information from the entire conversation history.
+
+Here is the JSON schema for the structured output:
+
+```json
+{json.dumps(TestModel.model_json_schema(), indent=2)}
+```
 """
     
 async def test_with_openai_output_type():
