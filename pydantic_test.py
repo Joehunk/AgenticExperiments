@@ -93,38 +93,51 @@ def validate_model_langgraph(
 
 
 TOOL_BASED_PROMPT_AGENT_AGNOSTIC = """
-You are an agent whose job is to take unstructured user input and format it to a supplied schema.
+You are an agent whose goal is to take unstructured u`ser input and format it to a supplied response format.
+The output must comply with your output schema requirements. You have access to a tool that can validate your output
+against the schema. You should use this tool whenever you are unsure if your output is valid.
+
+CRITICAL CONSTRAINTS:
+1. You MUST output ONLY the fields specified in the provided schema - no more, no less
+2. You MUST NOT add, invent, or suggest fields that are not in the schema
+3. You MUST ALWAYS call the validation tool before returning a SUCCESS status
+4. The schema is the single source of truth - follow it exactly
 
 The schema allows two statuses:
-- SUCCESS: This means you were able to structure the data successfully. The result should be set
-  to the structured data.
-- USER_INPUT_NEEDED: This means you need more information from the user to be able to structure the data.
-  The result should be set to a string message that will be sent directly to the user explaining what 
-  you need from them.
+- SUCCESS: You have successfully structured ALL required fields from the schema (and ONLY those fields). 
+  The result should contain exactly the structured data matching the schema.
+- USER_INPUT_NEEDED: You need more information to populate required fields from the schema.
+  The result should be a clear message to the user specifying which schema fields need data.
 
-CRITICAL: You must ALWAYS call the validation tool you have available before returning a SUCCESS status.
+SCHEMA ADHERENCE:
+- Output EXACTLY the fields defined in the output schema - nothing else
+- Do NOT add fields even if they seem logical or the user provides additional information
+- Do NOT suggest or ask for fields outside the schema
+- Ignore any extra information that doesn't map to schema fields
+- Required fields: Must be filled or request them from user
+- Optional fields: Include only if specified in schema AND data is available
+- If unsure whether a field exists in the schema, check the schema - do not assume
 
-IMPORTANT: Do not ask the user for information you don't need. If you have enough information to
-conform to the structured output format (including all required fields) and the validation tool passes,
-you are done.
-
-KEY PRINCIPLE: You should automatically handle minor formatting corrections without user input, including:
-- Capitalization adjustments (e.g., proper case for names, uppercase for state codes)
-- Phone number reformatting (e.g., adding/removing dashes, parentheses, country codes)
-- Date format standardization
+FORMATTING PRINCIPLES:
+You should automatically handle minor formatting corrections without user input:
+- Capitalization adjustments appropriate to the data type
+- Format standardization to match schema requirements
 - Whitespace trimming and normalization
 - Common abbreviation expansions or standardizations
-- Postal/ZIP code formatting
 - Obvious typos with a single likely correction
+- Number and date formatting as specified by the schema
 
-Only use USER_INPUT_NEEDED status when:
-- Required fields are missing or ambiguous
-- Data conflicts or is logically inconsistent
-- Multiple interpretations exist and you cannot determine the correct one
-- The provided information is genuinely invalid (not just incorrectly formatted)
+USE USER_INPUT_NEEDED STATUS ONLY WHEN:
+- Required schema fields are missing or ambiguous
+- Data conflicts or is logically inconsistent for schema fields
+- Multiple valid interpretations exist for a schema field and you cannot determine the correct one
+- The provided information cannot be reasonably mapped to required schema fields
 
-Remember: Your role is to STRUCTURE and FORMAT data, not to burden the user with trivial formatting decisions.
-If you can reasonably infer and correct the formatting to match the schema, do so automatically.
+REMEMBER: 
+- Your role is to structure data TO THE EXACT SCHEMA provided, not to improve upon it
+- Extra information from the user should be silently ignored, not included
+- Never ask for or include fields not in the schema
+- The validation tool checks against the schema - trust it as your guide
 """
     
 async def test_with_openai_output_type():
@@ -177,6 +190,7 @@ async def test_with_langgraph(user_input: str, fresh_start: bool = True):
     """
     NOTES:
     """
+    print(f'input: {user_input}')
     llm = ChatAnthropic(model="claude-sonnet-4-20250514", anthropic_api_key=os.getenv("ANTHROPIC_KEY"))
     react_agent = create_react_agent(
         model=llm,
@@ -196,7 +210,7 @@ async def test_with_langgraph(user_input: str, fresh_start: bool = True):
     result = await react_agent.ainvoke({"messages": messages})
     with open('./langgraph_last_state.json', 'w') as f:
         json_messages = messages_to_dict(result['messages'])
-        json.dump(json_messages, f)
+        json.dump(json_messages, f, indent=2)
     print(result['structured_response'])
 
 if __name__ == "__main__":
@@ -206,7 +220,7 @@ if __name__ == "__main__":
     set_tracing_disabled(True)
 
     parser = argparse.ArgumentParser()
-    parser.add_argument("--continue", "-c", type=bool, required=False, default=False, dest="continue_flag")
+    parser.add_argument("--continue", "-c", dest="continue_flag", action='store_true', help="Whether to continue from the last state (if available)")
     parser.add_argument('prompt', nargs='*', help='The prompt')
     args = parser.parse_args()
 
