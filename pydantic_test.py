@@ -197,8 +197,8 @@ async def test_with_langgraph(user_input: str, fresh_start: bool = True):
     else:
         with open('./langgraph_last_state.json', 'r') as f:
             json_messages = json.load(f)
-            messages = messages_from_dict(json_messages)
-    messages += [HumanMessage(content=user_input)]
+            # messages = messages_from_dict(json_messages)
+    messages += messages_to_dict([HumanMessage(content=user_input)])
 
     result = await react_agent.ainvoke({"messages": messages})
     with open('./langgraph_last_state.json', 'w') as f:
