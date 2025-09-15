@@ -17,9 +17,9 @@ class SomeStuff(BaseModel):
 
 
 # Define your graph state
-class GraphState(t.TypedDict):
-    query: str
-    approved: bool
+class GraphState(BaseModel):
+    query: str = ""
+    approved: bool = False
 
 def do_something(dont_care_state) -> GraphState:
     print(f"1️⃣ Doing something first: {dont_care_state}")
@@ -28,7 +28,7 @@ def do_something(dont_care_state) -> GraphState:
 # Define a node that might dynamically interrupt
 def check_for_approval(state: GraphState) -> GraphState:
     print(f"Checking for approval: {state}")
-    if "sensitive_action" in state["query"] and not state["approved"]:
+    if "sensitive_action" in state.query and not state.approved:
         # Dynamically interrupt if a sensitive action is detected and not approved
         print("⚠️ Sensitive action detected, interrupting for approval...")
         interrupt("User intervention required")
@@ -59,28 +59,28 @@ def run_workflow(sqlite_path: str = None):
     current_state = app.get_state(config)
     has_checkpoint = current_state.values is not None and len(current_state.values) > 0
 
-    pprint.pprint(current_state)
-
     keep_going = True
     while keep_going:
         # result = app.invoke(state, config=config)
-        result = app.invoke(None if has_checkpoint else {}, config=config)
-        match result:
-            case {'approved': True}:
+        result = app.invoke(None if has_checkpoint else GraphState(), config=config)
+        match (result, GraphState.model_validate(result)):
+            case (_, GraphState(approved=True)):
                 print("✅ Workflow successful.\nFinal state:", result)
                 # Continue to next node or finish
                 keep_going = False
-            case {'__interrupt__': [Interrupt(value=msg)]}:
+            case ({'__interrupt__': [Interrupt(value=msg)]}, state):
                 print(f"⚠️ Workflow interrupted: {msg}")
                 response = input("Approve action? (y/n): ").strip().lower()
-                state = result.copy()
                 if response == 'y':
-                    state['approved'] = True
+                    state.approved = True
                 app.update_state(config, state)
                 has_checkpoint = True
+
+                # Test...returning to make sure result works
+                return
             case _:
-                print("✅ Workflow completed successfully:", result)
-                keep_going = False
+                print("✅ No approval, trying again:", result)
+                has_checkpoint = True
 
 def test_serializer():
     serde = JsonPlusSerializer()
@@ -100,6 +100,6 @@ def test_serializer():
     pass
 
 if __name__ == "__main__":
-    # run_workflow(sys.argv[1] if len(sys.argv) > 1 else None)
-    test_serializer()
+    run_workflow(sys.argv[1] if len(sys.argv) > 1 else None)
+    # test_serializer()
 
