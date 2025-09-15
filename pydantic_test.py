@@ -184,6 +184,7 @@ async def test_with_langgraph(user_input: str, fresh_start: bool = True):
     NOTES:
     """
     print(f'input: {user_input}')
+    validate_model_langgraph.name
     llm = ChatAnthropic(model="claude-sonnet-4-20250514", anthropic_api_key=os.getenv("ANTHROPIC_KEY"))
     react_agent = create_react_agent(
         model=llm,
