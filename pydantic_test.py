@@ -1,3 +1,4 @@
+import uuid
 from pydantic import BaseModel, ValidationError, field_validator, Field, ValidationInfo
 import os
 import asyncio
@@ -9,6 +10,8 @@ from langgraph.prebuilt import create_react_agent
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage, messages_to_dict, messages_from_dict
 import pickle
 import json
+import instructor
+import anthropic
 
 from agents import Agent, Runner, function_tool, set_tracing_disabled
 from agents.extensions.models.litellm_model import LitellmModel
@@ -43,13 +46,14 @@ class FormResult(BaseModel):
         to fill out the form data.
         """
     )
-    result: t.Union[TestModel, str] = Field(
-        description="""
-        If status is SUCCESS, this field contains the filled out form data.
-
-        If status is USER_INPUT_NEEDED, this field contains a string that will be sent to the user
-        to get additional information.
-        """)
+    final_result: TestModel | None = Field(
+        default=None,
+        description="This field contains the filled out form data if status is SUCCESS. Otherwise it is null."
+    )
+    user_prompt: str | None = Field(
+        default=None,
+        description="This field contains a prompt to be sent to the user if status is USER_INPUT_NEEDED. Otherwise it is null."
+    )
     
 @function_tool(strict_mode=False)
 def validate_model_openai(json_dict: dict[str, t.Any]) -> t.Union[TestModel, ValidationError]:
@@ -190,28 +194,63 @@ async def test_with_langgraph(user_input: str, fresh_start: bool = True):
         model=llm,
         tools=[validate_model_langgraph],
         prompt=TOOL_BASED_PROMPT_AGENT_AGNOSTIC,
-        response_format=FormResult
+        response_format=FormResult,
     )
 
     if fresh_start or not os.path.exists('./langgraph_last_state.json'):
         messages = []
+        thread_id = uuid.uuid4().hex
     else:
-        with open('./langgraph_last_state.json', 'r') as f:
+        with open('./langgraph_last_v2_state.json', 'r') as f:
             json_messages = json.load(f)
-            # messages = messages_from_dict(json_messages)
-    messages += messages_to_dict([HumanMessage(content=user_input)])
+            messages = messages_from_dict(json_messages['messages'])
+            thread_id = json_messages['thread_id']
+    messages += [HumanMessage(content=user_input)]
 
-    result = await react_agent.ainvoke({"messages": messages})
-    with open('./langgraph_last_state.json', 'w') as f:
+    result = await react_agent.ainvoke({"messages": messages}, config={"configurable": {"thread_id": thread_id}})
+    with open('./langgraph_last_v2_state.json', 'w') as f:
         json_messages = messages_to_dict(result['messages'])
-        json.dump(json_messages, f, indent=2)
+        json.dump({'messages': json_messages, 'thread_id': thread_id}, f, indent=2)
     print(result['structured_response'])
+    
+class UserPrompt(BaseModel):
+    prompt: str = Field(description="A prompt to be sent to the user to get additional information.")
+    
+class TaskResult(BaseModel):
+    result: t.Union[TestModel, UserPrompt]
+    
+def test_with_instructor(user_input: str, fresh_start: bool = True):
+    if fresh_start or not os.path.exists('./instructor_last_state.json'):
+        messages = [
+            {"role": "system", "content": """
+            Based on the user's input, return the filled out TestModel. If you cannot or the TestModel fails validation,
+            tell the user why you cannot in a UserPrompt message.
+             """}
+        ]
+    else:
+        with open('./instructor_last_state.json', 'r') as f:
+            messages = json.load(f)
+    messages.append({"role": "user", "content": user_input})
+    
+    # client = instructor.from_anthropic(anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_KEY"), timeout=60))
+    client = instructor.from_provider("anthropic/claude-3-7-sonnet-latest", api_key=os.getenv("ANTHROPIC_KEY"), timeout=60)
+    response = client.chat.completions.create(
+        response_model=TaskResult,
+        messages=messages,
+        max_retries=3,
+        max_tokens=60000,
+        temperature=0.2,
+    )
+    print(response)
+    
+    with open('./instructor_last_state.json', 'w') as f:
+        json.dump(messages, f, indent=2)
 
 if __name__ == "__main__":
     import argparse
 
     dotenv.load_dotenv()
-    set_tracing_disabled(True)
+    set_tracing_disabled(False)
 
     parser = argparse.ArgumentParser()
     parser.add_argument("--continue", "-c", dest="continue_flag", action='store_true', help="Whether to continue from the last state (if available)")
@@ -219,3 +258,4 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     asyncio.run(test_with_langgraph(' '.join(args.prompt), fresh_start=not args.continue_flag))
+    # test_with_instructor(' '.join(args.prompt), fresh_start=not args.continue_flag)

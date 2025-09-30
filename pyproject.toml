@@ -5,6 +5,8 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
+    "anthropic>=0.66.0",
+    "instructor>=1.11.3",
     "langchain-anthropic>=0.3.19",
     "langgraph-checkpoint-sqlite>=2.0.11",
     "langgraph[sqlite]>=0.6.6",
