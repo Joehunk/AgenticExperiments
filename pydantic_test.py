@@ -12,6 +12,7 @@ import pickle
 import json
 import instructor
 import anthropic
+import pprint
 
 from agents import Agent, Runner, function_tool, set_tracing_disabled
 from agents.extensions.models.litellm_model import LitellmModel
@@ -213,35 +214,60 @@ async def test_with_langgraph(user_input: str, fresh_start: bool = True):
         json.dump({'messages': json_messages, 'thread_id': thread_id}, f, indent=2)
     print(result['structured_response'])
     
-class UserPrompt(BaseModel):
-    prompt: str = Field(description="A prompt to be sent to the user to get additional information.")
-    
-class TaskResult(BaseModel):
-    result: t.Union[TestModel, UserPrompt]
-    
 def test_with_instructor(user_input: str, fresh_start: bool = True):
     if fresh_start or not os.path.exists('./instructor_last_state.json'):
         messages = [
             {"role": "system", "content": """
-            Based on the user's input, return the filled out TestModel. If you cannot or the TestModel fails validation,
-            tell the user why you cannot in a UserPrompt message.
+Based on the user's input, return the filled out TestModel. If you cannot or the TestModel fails validation,
+tell the user why you cannot in a UserPrompt message.
+
+CRITICAL CONVERSATION HISTORY RULES:
+1. BEFORE asking ANY question, you MUST:
+   - Scan the entire conversation history for ALL previously provided information
+   - Extract every piece of data the user has already shared
+   - SYNTHESIZE related information from different conversation turns
+   - INFER complete answers by combining partial information
+
+2. INTELLIGENT INFORMATION SYNTHESIS:
+   - If the user provides updates or modifications (e.g., "use X instead"), apply them to previously given information
+   - Combine related data points from different turns to form complete answers
+   - When user provides a variation or preference for existing data, merge it with what you already know
+   - Example: If user said "my full info is A B C" then later says "use X for A", conclude the answer is "X B C"
+
+3. NEVER ask for information that can be:
+   - Found directly in conversation history
+   - DERIVED by combining existing information
+   - INFERRED from context and previous answers
+   - Constructed from partial updates to previous data
+
+4. Only ask for information when it is LOGICALLY IMPOSSIBLE to determine from existing conversation data.
+
+5. If you must ask questions:
+   - First state: "From our conversation, I have: [list what you know]"
+   - Then specify ONLY what cannot be derived: "I still need: [truly missing piece]"
+
+Remember: Users expect you to make obvious connections between related information across turns.
              """}
         ]
     else:
         with open('./instructor_last_state.json', 'r') as f:
             messages = json.load(f)
     messages.append({"role": "user", "content": user_input})
-    
-    # client = instructor.from_anthropic(anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_KEY"), timeout=60))
-    client = instructor.from_provider("anthropic/claude-3-7-sonnet-latest", api_key=os.getenv("ANTHROPIC_KEY"), timeout=60)
+
+    pprint.pprint(messages)
+    client = instructor.from_anthropic(anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_KEY"), timeout=60), mode=instructor.Mode.ANTHROPIC_REASONING_TOOLS)
     response = client.chat.completions.create(
-        response_model=TaskResult,
+        response_model=FormResult,
         messages=messages,
         max_retries=3,
         max_tokens=60000,
         temperature=0.2,
+        model="claude-sonnet-4-20250514"
     )
     print(response)
+    
+    if response.user_prompt:
+        messages.append({"role": "assistant", "content": response.user_prompt})
     
     with open('./instructor_last_state.json', 'w') as f:
         json.dump(messages, f, indent=2)
@@ -257,5 +283,5 @@ if __name__ == "__main__":
     parser.add_argument('prompt', nargs='*', help='The prompt')
     args = parser.parse_args()
 
-    asyncio.run(test_with_langgraph(' '.join(args.prompt), fresh_start=not args.continue_flag))
-    # test_with_instructor(' '.join(args.prompt), fresh_start=not args.continue_flag)
+    # asyncio.run(test_with_langgraph(' '.join(args.prompt), fresh_start=not args.continue_flag))
+    test_with_instructor(' '.join(args.prompt), fresh_start=not args.continue_flag)
