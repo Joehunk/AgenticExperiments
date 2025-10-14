@@ -1,5 +1,5 @@
 from pydantic import BaseModel
-from typing import TypeVar, Generic, Union
+from typing import Literal, TypeVar, Generic, TypedDict, Union
 
 class Foo(BaseModel):
     field1: str
@@ -41,3 +41,42 @@ print(dumped_baz2)
 baz2_reconstructed = Baz.model_validate(dumped_baz2)
 print (baz2_reconstructed.field3.__class__.__name__) 
 assert baz2 == baz2_reconstructed # Boom
+
+# Let's try a sort of ad-hoc discriminated union with dictionaries
+# which might sorta look like the way Davinix chunks things
+class ChunkFoo(BaseModel):
+    field: str
+
+# Use the same name field to prevent Pydantic from using this to discriminate
+# We want to show that the outer typed dictionary's field name is used.
+class ChunkBar(BaseModel):
+    field: int
+    
+class ChunkTypeFoo(TypedDict):
+    foo: ChunkFoo
+
+class ChunkTypeBar(TypedDict):
+    bar: ChunkBar
+
+class ChunkContainer(BaseModel):
+    chunks: list[Union[ChunkTypeFoo, ChunkTypeBar]]
+    
+container = ChunkContainer(chunks=[{'foo': ChunkFoo(field='hello')}, {'bar': ChunkBar(field=42)}])
+dumped_container = container.model_dump()
+print(dumped_container)  # {'chunks': [{'foo': {'field': 'hello'}}, {'bar': {'field': 42}}]}
+container_reconstructed = ChunkContainer.model_validate(dumped_container)
+assert container == container_reconstructed
+print(container_reconstructed.chunks[0]['foo'].__class__.__name__)  # ChunkFoo
+print(container_reconstructed.chunks[1]['bar'].__class__.__name__)  # ChunkBar
+
+# Let's pull the trigger a deeferent way
+class ChunkedContainer2(BaseModel):
+    chunks: list[Union[dict[Literal['foo'], ChunkFoo], dict[Literal['bar'], ChunkBar]]]
+    
+container2 = ChunkedContainer2(chunks=[{'foo': ChunkFoo(field='hello')}, {'bar': ChunkBar(field=42)}])
+dumped_container2 = container2.model_dump()
+print(dumped_container2)  # {'chunks': [{'foo': {'field': 'hello'}}, {'bar': {'field': 42}}]}
+container2_reconstructed = ChunkedContainer2.model_validate(dumped_container2)
+assert container2 == container2_reconstructed
+print(container2_reconstructed.chunks[0]['foo'].__class__.__name__)  # ChunkFoo
+print(container2_reconstructed.chunks[1]['bar'].__class__.__name__)  # ChunkBar
