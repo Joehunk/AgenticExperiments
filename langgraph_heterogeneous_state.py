@@ -58,16 +58,24 @@ def workflow_test():
         bar = Bar(bar_field=len(state.blat_field))
         return Baz(baz_field=bar)
     
-    # subgraph = StateGraph(state_schema=Bar, initial_schema=Bar, output_schema=Bar)
+    subgraph = StateGraph(state_schema=Bar, initial_schema=Bar, output_schema=Bar)
     
-    graph = StateGraph(state_schema=Foo, initial_schema=Foo, output_schema=Baz)
+    subgraph.add_sequence(
+        [
+            ("bar_to_generic", bar_to_generic_node),
+            ("generic_to_generic", generic_to_generic_node),
+            ("generic_to_blat", generic_to_blat_node),
+        ]
+    )
+    subgraph.set_entry_point("bar_to_generic")
+    subgraph.add_edge("generic_to_blat", END)
+    
+    graph = StateGraph(state_schema=Bar, initial_schema=Foo, output_schema=Baz)
     
     graph.add_sequence(
         [
             ("foo_to_bar", foo_to_bar_node),
-            ("bar_to_generic", bar_to_generic_node),
-            ("generic_to_generic", generic_to_generic_node),
-            ("generic_to_blat", generic_to_blat_node),
+            ("generic_processing", subgraph.compile(checkpointer=True)),
             ("blat_to_baz", blat_to_baz_node),
         ]
     )
