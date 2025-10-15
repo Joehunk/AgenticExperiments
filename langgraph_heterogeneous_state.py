@@ -26,39 +26,71 @@ class Baz(BaseModel):
     
 class Blat(BaseModel):
     blat_field: list[str]
+    
+class GenericClass[T: BaseModel](BaseModel):
+    item: T
 
 def workflow_test():
+    kaboom = False
+    
     def foo_to_bar_node(state: Foo) -> Bar:
         print(f"Converting Foo to Bar: {state}")
         return Bar(bar_field=len(state.foo_field))
-
-    def bar_to_baz_node(state: Bar) -> Baz:
-        print(f"Converting Bar to Baz: {state}")
-        return Baz(baz_field=Bar(bar_field=state.bar_field))
-
-    def baz_to_blat_node(state: Baz) -> Blat:
-        print(f"Converting Baz to Blat: {state}")
-        return Blat(blat_field=[str(state.baz_field.bar_field)] * state.baz_field.bar_field)
     
-    graph = StateGraph(state_schema=dict, initial_schema=Foo, output_schema=Blat)
+    def bar_to_generic_node(state: Bar) -> GenericClass[Bar]:
+        print(f"Converting Bar to GenericClass[Bar]: {state}")
+        return GenericClass[Bar](item=state)
+    
+    def generic_to_generic_node(state: GenericClass[Bar]) -> GenericClass[Bar]:
+        print(f"Converting GenericClass[Bar] to GenericClass[Bar]: {state}")
+        nonlocal kaboom
+        if kaboom:
+            raise ValueError("Kaboom! Intentional error for testing.")
+        return GenericClass[Bar](item=Bar(bar_field=state.item.bar_field + 1))
+
+    def generic_to_blat_node(state: GenericClass[Bar]) -> Blat:
+        print(f"Converting GenericClass[Bar] to Blat: {state}")
+        bar = state.item
+        return Blat(blat_field=[str(bar.bar_field)] * bar.bar_field)
+    
+    def blat_to_baz_node(state: Blat) -> Baz:
+        print(f"Converting Blat to Baz: {state}")
+        bar = Bar(bar_field=len(state.blat_field))
+        return Baz(baz_field=bar)
+    
+    # subgraph = StateGraph(state_schema=Bar, initial_schema=Bar, output_schema=Bar)
+    
+    graph = StateGraph(state_schema=Foo, initial_schema=Foo, output_schema=Baz)
     
     graph.add_sequence(
         [
             ("foo_to_bar", foo_to_bar_node),
-            ("bar_to_baz", bar_to_baz_node),
-            ("baz_to_blat", baz_to_blat_node),
+            ("bar_to_generic", bar_to_generic_node),
+            ("generic_to_generic", generic_to_generic_node),
+            ("generic_to_blat", generic_to_blat_node),
+            ("blat_to_baz", blat_to_baz_node),
         ]
     )
     
     graph.set_entry_point("foo_to_bar")
-    graph.add_edge("baz_to_blat", END)
+    graph.add_edge("blat_to_baz", END)
     
     # compile graph with in-memory checkpointer
     checkpointer = InMemorySaver(serde=JsonPlusSerializer())
     app = graph.compile(checkpointer=checkpointer)
     
-    result = app.invoke(Foo(foo_field="hello"), config={"configurable": {"thread_id": "test_run_1"}})
-    parsed_result = Blat.model_validate(result)
+    config: RunnableConfig = {"configurable": {"thread_id": "test_run_1"}}
+   
+    kaboom = True
+    try:
+        app.invoke(Foo(foo_field="hello"), config=config)
+        print("This should not print, as an error is expected.")
+    except Exception as e:
+        print(f"Caught an exception as expected: {e}")
+    kaboom = False
+
+    result = app.invoke(None, config=config)
+    parsed_result = Baz.model_validate(result)
     print(f"Final result: {parsed_result}")
     
 workflow_test()
