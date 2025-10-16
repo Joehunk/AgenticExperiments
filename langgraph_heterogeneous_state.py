@@ -51,45 +51,28 @@ def adapt_node_to_channel[TIn: BaseModel, TOut: BaseModel](
     
     return wrapper
 
-def adapt_input_node_to_channel[TIn: BaseModel, TOut: BaseModel](
-    output_type: type[TOut],
-    node: t.Callable[[TIn], TOut],
-) -> t.Callable[[TIn], dict]:
-    output_channel_name = channel_name_for_type(output_type)
-
-    def wrapper(input_data: TIn) -> dict:
-        output_data = node(input_data)
-        return { output_channel_name: output_data.model_dump() }
-    
-    return wrapper
-
-def adapt_output_node_to_channel[TIn: BaseModel, TOut: BaseModel](
+def langgraph_pydantic_node[TIn: BaseModel, TOut: BaseModel](
     input_type: type[TIn],
-    node: t.Callable[[TIn], TOut],
-) -> t.Callable[[dict], TOut]:
-    input_channel_name = channel_name_for_type(input_type)
-
-    def wrapper(state: dict) -> TOut:
-        input_data_raw = state.get(input_channel_name)
-        if not input_data_raw:
-            raise ValueError(f"Input channel '{input_channel_name}' is missing in state: {state}")
-        input_data = input_type.model_validate(input_data_raw)
-        output_data = node(input_data)
-        return output_data
-    
-    return wrapper
+    output_type: type[TOut],
+) -> t.Callable[[t.Callable[[TIn], TOut]], t.Callable[[dict], dict]]:
+    def decorator(node: t.Callable[[TIn], TOut]) -> t.Callable[[dict], dict]:
+        return adapt_node_to_channel(input_type, output_type, node)
+    return decorator
 
 def workflow_test():
     kaboom = False
     
+    @langgraph_pydantic_node(Foo, Bar)
     def foo_to_bar_node(state: Foo) -> Bar:
         print(f"Converting Foo to Bar: {state}")
         return Bar(bar_field=len(state.foo_field))
     
+    @langgraph_pydantic_node(Bar, GenericClass[Bar])
     def bar_to_generic_node(state: Bar) -> GenericClass[Bar]:
         print(f"Converting Bar to GenericClass[Bar]: {state}")
         return GenericClass[Bar](item=state)
-    
+
+    @langgraph_pydantic_node(GenericClass[Bar], GenericClass[Bar])
     def generic_to_generic_node(state: GenericClass[Bar]) -> GenericClass[Bar]:
         print(f"Converting GenericClass[Bar] to GenericClass[Bar]: {state}")
         nonlocal kaboom
@@ -97,11 +80,13 @@ def workflow_test():
             raise ValueError("Kaboom! Intentional error for testing.")
         return GenericClass[Bar](item=Bar(bar_field=state.item.bar_field + 1))
 
+    @langgraph_pydantic_node(GenericClass[Bar], Blat)
     def generic_to_blat_node(state: GenericClass[Bar]) -> Blat:
         print(f"Converting GenericClass[Bar] to Blat: {state}")
         bar = state.item
         return Blat(blat_field=[str(bar.bar_field)] * bar.bar_field)
     
+    @langgraph_pydantic_node(Blat, Baz)
     def blat_to_baz_node(state: Blat) -> Baz:
         print(f"Converting Blat to Baz: {state}")
         bar = Bar(bar_field=len(state.blat_field))
@@ -111,9 +96,9 @@ def workflow_test():
     
     subgraph.add_sequence(
         [
-            ("bar_to_generic", adapt_node_to_channel(Bar, GenericClass[Bar], bar_to_generic_node)),
-            ("generic_to_generic", adapt_node_to_channel(GenericClass[Bar], GenericClass[Bar], generic_to_generic_node)),
-            ("generic_to_blat", adapt_node_to_channel(GenericClass[Bar], Blat, generic_to_blat_node)),
+            ("bar_to_generic", bar_to_generic_node),
+            ("generic_to_generic", generic_to_generic_node),
+            ("generic_to_blat", generic_to_blat_node),
         ]
     )
     subgraph.set_entry_point("bar_to_generic")
@@ -123,9 +108,9 @@ def workflow_test():
 
     graph.add_sequence(
         [
-            ("foo_to_bar", adapt_node_to_channel(Foo, Bar, foo_to_bar_node)),
+            ("foo_to_bar", foo_to_bar_node),
             ("generic_processing", subgraph.compile(checkpointer=True)),
-            ("blat_to_baz", adapt_node_to_channel(Blat, Baz, blat_to_baz_node)),
+            ("blat_to_baz", blat_to_baz_node),
         ]
     )
     
