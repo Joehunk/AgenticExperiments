@@ -1,18 +1,12 @@
 from langgraph.graph import StateGraph, END
-from langgraph.checkpoint.sqlite import SqliteSaver
 from langgraph.checkpoint.memory import InMemorySaver
-from langgraph.checkpoint.base import JsonPlusSerializer, BaseCheckpointSaver
-from langgraph.types import interrupt, Interrupt
-import sqlite3
-import tempfile
-from pydantic import BaseModel, Field
+from langgraph.checkpoint.base import JsonPlusSerializer
+from pydantic import BaseModel
 from langgraph.graph import END, StateGraph
-from langgraph.graph.state import CompiledStateGraph
 from langchain_core.runnables import RunnableConfig
 
 import typing as t
-import sys
-import pprint
+
 
 
 class Foo(BaseModel):
@@ -137,5 +131,286 @@ def workflow_test():
     
     result = app.invoke(None, config=config)
     print(f"Final result: {result}")
+    
+def conditional_cyclic_workflow_test():
+    # This blows up at the node that completes the cycle.
+    @langgraph_pydantic_node(Foo, Bar)
+    def before_loop_node(state: Foo) -> Bar:
+        print(f"Converting Foo to Bar: {state}")
+        return Bar(bar_field=len(state.foo_field))
+    
+    @langgraph_pydantic_node(Bar, GenericClass[Bar])
+    def first_loop_node(state: Bar) -> GenericClass[Bar]:
+        print(f"Converting Bar to GenericClass[Bar]: {state}")
+        return GenericClass[Bar](item=state)
+        
+    @langgraph_pydantic_node(GenericClass[Bar], GenericClass[Bar])
+    def second_loop_node(state: GenericClass[Bar]) -> GenericClass[Bar]:
+        print(f"Converting GenericClass[Bar] to GenericClass[Bar]: {state}")
+        return GenericClass[Bar](item=Bar(bar_field=state.item.bar_field - 1))
 
-workflow_test()
+    @langgraph_pydantic_node(GenericClass[Bar], Bar)
+    def third_loop_node(state: GenericClass[Bar]) -> Bar:
+        return state.item
+    
+    def keep_looping(state: Bar) -> bool:
+        if state.bar_field > 0:
+            return "loop"
+        return "continue"
+    
+    @langgraph_pydantic_node(Bar, Foo)
+    def after_loop_node(state: Bar) -> Foo:
+        return Foo(foo_field=str(state.bar_field))
+    
+    graph = StateGraph(state_schema=dict)
+    
+    graph.add_sequence(
+        [
+            ("before_loop", before_loop_node),
+            ("first_loop", first_loop_node),
+            ("second_loop", second_loop_node),
+            ("third_loop", third_loop_node),
+        ]
+    )
+    
+    graph.add_conditional_edges("third_loop", keep_looping, {
+        "loop": "first_loop",
+        "continue": "after_loop",
+    })
+    graph.add_node("after_loop", after_loop_node)
+    
+    graph.set_entry_point("before_loop")
+    graph.add_edge("after_loop", END)
+    
+    app = graph.compile()
+    result = app.invoke({ channel_name_for_type(Foo): Foo(foo_field="hello").model_dump() })
+    print(f"Final result of cyclic workflow: {result}")
+    
+def conditional_cyclic_workflow_test_with_wrappers():
+    # This also blows up so it's not the decorators.
+    def before_loop_node(state: Foo) -> Bar:
+        print(f"Converting Foo to Bar: {state}")
+        return Bar(bar_field=len(state.foo_field))
+    
+    def first_loop_node(state: Bar) -> GenericClass[Bar]:
+        print(f"Converting Bar to GenericClass[Bar]: {state}")
+        return GenericClass[Bar](item=state)
+        
+    def second_loop_node(state: GenericClass[Bar]) -> GenericClass[Bar]:
+        print(f"Converting GenericClass[Bar] to GenericClass[Bar]: {state}")
+        return GenericClass[Bar](item=Bar(bar_field=state.item.bar_field - 1))
+
+    def third_loop_node(state: GenericClass[Bar]) -> Bar:
+        return state.item
+    
+    def keep_looping(state: Bar) -> bool:
+        if state.bar_field > 0:
+            return "loop"
+        return "continue"
+    
+    def after_loop_node(state: Bar) -> Foo:
+        return Foo(foo_field=str(state.bar_field))
+    
+    graph = StateGraph(state_schema=dict)
+    
+    graph.add_sequence(
+        [
+            ("before_loop", adapt_node_to_channel(Foo, Bar, before_loop_node)),
+            ("first_loop", adapt_node_to_channel(Bar, GenericClass[Bar], first_loop_node)),
+            ("second_loop", adapt_node_to_channel(GenericClass[Bar], GenericClass[Bar], second_loop_node)),
+            ("third_loop", adapt_node_to_channel(GenericClass[Bar], Bar, third_loop_node)),
+        ]
+    )
+    
+    graph.add_conditional_edges("third_loop", keep_looping, {
+        "loop": "first_loop",
+        "continue": "after_loop",
+    })
+    graph.add_node("after_loop", adapt_node_to_channel(Bar, Foo, after_loop_node))
+    
+    graph.set_entry_point("before_loop")
+    graph.add_edge("after_loop", END)
+    
+    app = graph.compile()
+    result = app.invoke({ channel_name_for_type(Foo): Foo(foo_field="hello").model_dump() })
+    print(f"Final result of cyclic workflow: {result}")
+    
+def conditional_cyclic_test_no_decorators():
+    # This works
+    graph = StateGraph(state_schema=dict)
+    
+    def before_loop(state: dict) -> dict:
+        return { 'counter': int(state["counter_as_string"])}
+    
+    def count_down(state: dict) -> dict:
+        return { 'counter': state["counter"] - 1 }
+
+    def after_loop(state: dict) -> dict:
+        return { 'summary': f"Final count is {state['counter']}" }
+    
+    def keep_looping(state: dict) -> str:
+        if state["counter"] > 0:
+            return "loop"
+        return "continue"
+    
+    graph.add_sequence(
+        [
+            ("before_loop", before_loop),
+            ("first_loop", count_down),
+        ]
+    )
+
+    graph.add_conditional_edges("first_loop", keep_looping, {
+        "loop": "first_loop",
+        "continue": "after_loop",
+    })
+    graph.add_node("after_loop", after_loop)
+
+    graph.set_entry_point("before_loop")
+    graph.add_edge("after_loop", END)
+    
+    app = graph.compile()
+    result = app.invoke({ "counter_as_string": "10" })
+    print(f"Final result of simple cyclic workflow: {result}")
+    
+def conditional_cyclic_test_no_decorators_bigger():
+    # This also works
+    graph = StateGraph(state_schema=dict)
+    
+    def before_loop(state: dict) -> dict:
+        return { 'counter': int(state["counter_as_string"])}
+    
+    def first_loop_node(state: dict) -> dict:
+        return { 'counter_2': str(state["counter"]) }
+    
+    def second_loop_node(state: dict) -> dict:
+        return { 'counter_3': int(state["counter_2"]) - 1 }
+    
+    def third_loop_node(state: dict) -> dict:
+        print(f"Third loop node received state: {state}")
+        return { 'counter': state["counter_3"] }
+
+    def after_loop(state: dict) -> dict:
+        return { 'summary': f"Final count is {state['counter']}" }
+    
+    def keep_looping(state: dict) -> str:
+        if state["counter"] > 0:
+            return "loop"
+        return "continue"
+    
+    graph.add_sequence(
+        [
+            ("before_loop", before_loop),
+            ("first_loop", first_loop_node),
+            ("second_loop", second_loop_node),
+            ("third_loop", third_loop_node),
+        ]
+    )
+
+    graph.add_conditional_edges("third_loop", keep_looping, {
+        "loop": "first_loop",
+        "continue": "after_loop",
+    })
+    graph.add_node("after_loop", after_loop)
+
+    graph.set_entry_point("before_loop")
+    graph.add_edge("after_loop", END)
+    
+    app = graph.compile()
+    result = app.invoke({ "counter_as_string": "5" })
+    print(f"Final result of simple cyclic workflow: {result}")
+    
+def simplified_pydantic_with_decorators():
+    # This blows up at the node that completes the cycle.
+    @langgraph_pydantic_node(Foo, Bar)
+    def before_loop_node(state: Foo) -> Bar:
+        return Bar(bar_field=int(state.foo_field))
+    
+    @langgraph_pydantic_node(Bar, GenericClass[Bar])
+    def loop_node(state: Bar) -> Bar:
+        return Bar(bar_field=state.bar_field - 1)
+        
+    def keep_looping(state: Bar) -> bool:
+        if state.bar_field > 0:
+            return "loop"
+        return "continue"
+    
+    @langgraph_pydantic_node(Bar, Foo)
+    def after_loop_node(state: Bar) -> Foo:
+        return Foo(foo_field=str(state.bar_field))
+    
+    graph = StateGraph(state_schema=dict)
+    
+    graph.add_sequence(
+        [
+            ("before_loop", before_loop_node),
+            ("loop", loop_node),
+        ]
+    )
+
+    graph.add_conditional_edges("loop", keep_looping, {
+        "loop": "loop",
+        "continue": "after_loop",
+    })
+    graph.add_node("after_loop", after_loop_node)
+    
+    graph.set_entry_point("before_loop")
+    graph.add_edge("after_loop", END)
+    
+    app = graph.compile()
+    result = app.invoke({ channel_name_for_type(Foo): Foo(foo_field="5").model_dump() })
+    print(f"Final result of cyclic workflow: {result}")
+    
+def simplified_pydantic_manual():
+    # This blows up at the node that completes the cycle.
+    def before_loop_node(state: dict) -> dict:
+        foo = Foo.model_validate(state["foo"])
+        bar = Bar(bar_field=int(foo.foo_field))
+        return { "bar": bar.model_dump() }
+    
+    def loop_node(state: dict) -> dict:
+        bar = Bar.model_validate(state["bar"])
+        return { "bar": Bar(bar_field=bar.bar_field - 1).model_dump() }
+
+    def keep_looping(state: dict) -> str:
+        bar = Bar.model_validate(state["bar"])
+        if bar.bar_field > 0:
+            return "loop"
+        return "continue"
+    
+    # This is the problem. Apparently just changing the signature of
+    # a function in add_conditional_edges makes it work.
+    # If I change it to accept dict instead of Bar, it works.
+    # It's obviously trying and failing to do some Pydantic magic.
+    def keep_looping_this_blows_shit_up(state: Bar) -> str:
+        if state.bar_field > 0:
+            return "loop"
+        return "continue"
+
+    def after_loop_node(state: dict) -> dict:
+        bar = Bar.model_validate(state["bar"])
+        return { "foo": Foo(foo_field=str(bar.bar_field)).model_dump() }
+
+    graph = StateGraph(state_schema=dict)
+    
+    graph.add_sequence(
+        [
+            ("before_loop", before_loop_node),
+            ("loop", loop_node),
+        ]
+    )
+
+    graph.add_conditional_edges("loop", keep_looping, {
+        "loop": "loop",
+        "continue": "after_loop",
+    })
+    graph.add_node("after_loop", after_loop_node)
+    
+    graph.set_entry_point("before_loop")
+    graph.add_edge("after_loop", END)
+    
+    app = graph.compile()
+    result = app.invoke({ "foo": Foo(foo_field="5").model_dump() })
+    print(f"Final result of cyclic workflow: {result}")
+
+simplified_pydantic_manual()
