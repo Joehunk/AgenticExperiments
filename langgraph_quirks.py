@@ -90,6 +90,10 @@ def linear_pydantic_graph_with_crash_recovery() -> None:
     parsed_result = Blat.model_validate(result)
     print(f"Final result of simple linear graph: {parsed_result}")
     
+class LoopState(BaseModel):
+    input_baz: Baz
+    counter: int
+    
 def but_if_you_add_a_cycle():
     graph = StateGraph(state_schema=Foo, input_schema=Foo, output_schema=Blat)
     
@@ -103,32 +107,49 @@ def but_if_you_add_a_cycle():
         print("Second node executing")
         return Baz(baz_field=float(state.bar_field) * 2.5)
     
-    def looping_node(state: Baz) -> Baz:
+    def before_loop_node(state: Baz) -> LoopState:
+        print("Before loop node executing")
+        return LoopState(input_baz=state, counter=0)
+
+    def looping_node(state: LoopState) -> LoopState:
         print("Looping node executing")
         nonlocal kaboom
         if kaboom:
             raise RuntimeError("Simulated crash!")
-        return Baz(baz_field=state.baz_field + 100)
+        return LoopState(input_baz=state.input_baz, counter=state.counter + 1)
     
+    def check_loop_state_node(state: LoopState) -> LoopState:
+        print("Check loop state node executing")
+        return state.model_copy()
+    
+    def after_loop_node(state: LoopState) -> Baz:
+        print("After loop node executing")
+        return state.input_baz
+
     def final_node(state: Baz) -> Blat:
         print("Final node executing")
         return Blat(blat_field=state.baz_field > 1000)
 
-    def check_if_loop(state: Baz) -> str:
-        if state.baz_field < 1000:
+    def check_if_loop(state: LoopState) -> str:
+        if state.counter < 5:
             return "loop"
         return "continue"
     
     graph.add_sequence([
         ("first_node", first_node),
         ("second_node", second_node),
+        ("before_loop_node", before_loop_node),
         ("looping_node", looping_node),
+        ("check_loop_state_node", check_loop_state_node),
     ])
-    graph.add_node("final_node", final_node)
-    graph.add_conditional_edges("looping_node", check_if_loop, {
+    graph.add_conditional_edges("check_loop_state_node", check_if_loop, {
         "loop": "looping_node",
-        "continue": "final_node",
+        "continue": "after_loop_node",
     })
+    
+    graph.add_node("after_loop_node", after_loop_node)
+    graph.add_edge("after_loop_node", "final_node")
+    graph.add_node("final_node", final_node)
     
     
     graph.set_entry_point("first_node")
