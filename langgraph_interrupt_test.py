@@ -139,7 +139,7 @@ def setup_workflow_with_subgraph() -> CompiledStateGraph:
         state.times_post_step_was_run += 1
         return state.outer_graph_state
 
-    workflow = StateGraph(SubgraphState)
+    workflow = StateGraph(state_schema=OuterGraphState)
     workflow.add_node("do_something", do_something)
 
     subgraph = StateGraph(OuterGraphState, context_schema=None, input_schema=OuterGraphState, output_schema=OuterGraphState)
@@ -163,7 +163,7 @@ def setup_workflow_with_subgraph() -> CompiledStateGraph:
     # conn = sqlite3.connect(db_path, check_same_thread=False)
     # checkpointer = SqliteSaver(conn)
     
-    checkpointer=InMemorySaver()
+    checkpointer=InMemorySaver(serde=JsonPlusSerializer())
 
     return workflow.compile(checkpointer=checkpointer)
 
@@ -228,9 +228,107 @@ def test_langgraph_with_interrupt_in_subgraph():
     print(result_state)
     
     assert result.get('__interrupt__', None) is None, "Did not expect an interrupt this time."
+    
+def test_langgraph_direct_pydantic_subgraph():
+    class SubgraphStateModel(BaseModel):
+        count: int
+            
+    class InputModel(BaseModel):
+        prompt: str
+        
+    class OutputModel(BaseModel):
+        result: int
+        
+    class OuterStateGraphModel(BaseModel):
+        prompt: str
+        subgraph_state: SubgraphStateModel
+        
+    do_interrupt = False
+        
+    def setup_subgraph_workflow(checkpointer: BaseCheckpointSaver) -> CompiledStateGraph:    
+        def before_subgraph_node(state: InputModel) -> OuterStateGraphModel:
+            return OuterStateGraphModel(prompt=state.prompt, subgraph_state=SubgraphStateModel(count=0))
+        
+        def initial_subgraph_node(state: OuterStateGraphModel) -> SubgraphStateModel:
+            return state.subgraph_state
+        
+        def subgraph_loop_node(state: SubgraphStateModel) -> SubgraphStateModel:
+            nonlocal do_interrupt
+            
+            if do_interrupt:
+                interrupt("Simulated interrupt in subgraph loop")
+                
+            state.count += 1
+            return state
+        
+        def check_loop(state: SubgraphStateModel) -> str:
+            if state.count < 5:
+                return "loop"
+            else:
+                return "proceed"
+        
+        def after_subgraph_node(state: SubgraphStateModel) -> OuterStateGraphModel:
+            return OuterStateGraphModel(prompt="completed", subgraph_state=state)
+        
+        def final_node(state: OuterStateGraphModel) -> OutputModel:
+            return OutputModel(result=state.subgraph_state.count)
+        
+        subgraph = StateGraph(state_schema=OuterStateGraphModel)
+        subgraph.add_node("initial_subgraph_node", initial_subgraph_node)
+        subgraph.add_node("subgraph_loop_node", subgraph_loop_node)
+        subgraph.add_node("after_subgraph_node", after_subgraph_node)
+        subgraph.add_edge("initial_subgraph_node", "subgraph_loop_node")
+        subgraph.add_conditional_edges(
+            "subgraph_loop_node",
+            check_loop,
+            {
+                "loop": "subgraph_loop_node",
+                "proceed": "after_subgraph_node",
+            },
+        )
+        subgraph.add_edge("after_subgraph_node", END)
+        subgraph.set_entry_point("initial_subgraph_node")
+        compiled_subgraph = subgraph.compile(checkpointer=True)
+
+        # Change state_schema to InputModel to see the blow up.
+        # state_schema needs to exactly match the state as of the subgraph transition. If you have multiple
+        # subgraphs with different types, or a subgraph with a different input/output schema, 
+        # this is almost impossible to get right.
+        graph = StateGraph(state_schema=OuterStateGraphModel, input_schema=InputModel, output_schema=OutputModel)
+        graph.add_node("before_subgraph_node", before_subgraph_node)
+        graph.add_node("subgraph", compiled_subgraph)
+        graph.add_node("final_node", final_node)
+        graph.add_edge("before_subgraph_node", "subgraph")
+        graph.add_edge("subgraph", "final_node")
+        graph.add_edge("final_node", END)
+        graph.set_entry_point("before_subgraph_node")
+        
+        return graph.compile(checkpointer=checkpointer)
+    
+    def do_test(checkpointer: BaseCheckpointSaver):
+        nonlocal do_interrupt
+        
+        app = setup_subgraph_workflow(checkpointer)
+        initial_state = InputModel(prompt="Start processing")
+        configuration: RunnableConfig = {"configurable": {"thread_id": "test_direct_pydantic_subgraph"}}
+        
+        do_interrupt = True
+        result = app.invoke(input=initial_state, config=configuration)
+        assert '__interrupt__' in result, "Expected an interrupt but did not get one."
+
+        do_interrupt = False
+        result = app.invoke(input=None, config=configuration)
+        result_state = OutputModel.model_validate(result)
+        assert result_state.result == 5
+        
+        print("Final result state:", result_state)
+        
+    do_test(InMemorySaver(serde=JsonPlusSerializer()))
+
 
 
 if __name__ == "__main__":
     # run_workflow(sys.argv[1] if len(sys.argv) > 1 else None)
     # test_serializer()
-    test_langgraph_with_interrupt_in_subgraph()
+    # test_langgraph_with_interrupt_in_subgraph()
+    test_langgraph_direct_pydantic_subgraph()
