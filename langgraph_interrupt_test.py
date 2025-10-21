@@ -139,7 +139,7 @@ def setup_workflow_with_subgraph() -> CompiledStateGraph:
         state.times_post_step_was_run += 1
         return state.outer_graph_state
 
-    workflow = StateGraph(OuterGraphState)
+    workflow = StateGraph(SubgraphState)
     workflow.add_node("do_something", do_something)
 
     subgraph = StateGraph(OuterGraphState, context_schema=None, input_schema=OuterGraphState, output_schema=OuterGraphState)

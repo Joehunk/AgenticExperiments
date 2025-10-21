@@ -153,8 +153,9 @@ def conditional_cyclic_workflow_test():
     def third_loop_node(state: GenericClass[Bar]) -> Bar:
         return state.item
     
-    def keep_looping(state: Bar) -> bool:
-        if state.bar_field > 0:
+    def keep_looping(state: dict) -> str:
+        bar = Bar.model_validate(state.get(channel_name_for_type(Bar)))
+        if bar.bar_field > 0:
             return "loop"
         return "continue"
     
@@ -413,4 +414,4 @@ def simplified_pydantic_manual():
     result = app.invoke({ "foo": Foo(foo_field="5").model_dump() })
     print(f"Final result of cyclic workflow: {result}")
 
-simplified_pydantic_manual()
+conditional_cyclic_workflow_test()

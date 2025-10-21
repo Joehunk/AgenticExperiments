@@ -1,4 +1,4 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from typing import Literal, TypeVar, Generic, TypedDict, Union
 
 class Foo(BaseModel):
@@ -80,3 +80,39 @@ container2_reconstructed = ChunkedContainer2.model_validate(dumped_container2)
 assert container2 == container2_reconstructed
 print(container2_reconstructed.chunks[0]['foo'].__class__.__name__)  # ChunkFoo
 print(container2_reconstructed.chunks[1]['bar'].__class__.__name__)  # ChunkBar
+
+class GenericBase[T: BaseModel | list[BaseModel]](BaseModel):
+    item: T
+
+def create_generic_model_instance[T: BaseModel | list[BaseModel]](model_cls: type[T], list_size: int | None = None) -> type:
+    if list_size is not None:
+        field_kwargs = {'min_length': list_size, 'max_length': list_size}
+    else:
+        field_kwargs = {}
+    class GenericModel(GenericBase[model_cls]):
+        item: model_cls = Field(..., **field_kwargs) # type: ignore
+
+    return GenericModel
+
+generic_model = create_generic_model_instance(Foo)
+instance = generic_model(item=Foo(field1="generic"))
+dumped_instance = instance.model_dump()
+print(dumped_instance)  # {'item': {'field1': 'generic'}}
+reconstructed_instance = generic_model.model_validate(dumped_instance)
+print(reconstructed_instance.item.__class__.__name__)  # Foo
+
+generic_model = create_generic_model_instance(list[Foo], list_size=2)
+instance = generic_model(item=[Foo(field1="one"), Foo(field1="two")])
+dumped_instance = instance.model_dump()
+print(dumped_instance)  # {'item': [{'field1': 'one'}, {'field1': 'two'}]}
+reconstructed_instance = generic_model.model_validate(dumped_instance)
+print([foo.__class__.__name__ for foo in reconstructed_instance.item])  # ['Foo
+
+try:
+    invalid_instance = generic_model(item=[Foo(field1="only one")])
+    print("This should not print")
+except Exception as e:
+    print(f"Error as expected for invalid list size: {e}")
+    
+print(f"Name of ungeneric type: {GenericBase.__name__}")
+print(f"Name of generic type: {GenericBase[Foo].__name__}")
